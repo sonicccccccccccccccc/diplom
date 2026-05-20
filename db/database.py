@@ -24,7 +24,6 @@ class DatabaseManager:
         self._master_key = None
         self._temp_path = None
         self.conn = None
-        # Атрибуты для нового формата (полное шифрование)
         self._salt = None
         self._encrypted_master_key = None
 
@@ -73,7 +72,9 @@ class DatabaseManager:
                 url TEXT DEFAULT '',
                 username TEXT DEFAULT '',
                 password TEXT DEFAULT '',
-                notes TEXT DEFAULT ''
+                notes TEXT DEFAULT '',
+                attachment BLOB DEFAULT '',
+                attachment_name TEXT DEFAULT ''
             );
         """)
         self.conn.execute("""
@@ -84,7 +85,9 @@ class DatabaseManager:
                 account_holder TEXT DEFAULT '',
                 account_number TEXT DEFAULT '',
                 bic_swift TEXT DEFAULT '',
-                notes TEXT DEFAULT ''
+                notes TEXT DEFAULT '',
+                attachment BLOB DEFAULT '',
+                attachment_name TEXT DEFAULT ''
             );
         """)
         self.conn.execute("""
@@ -94,14 +97,18 @@ class DatabaseManager:
                 currency TEXT DEFAULT '',
                 wallet_address TEXT DEFAULT '',
                 seed_phrase TEXT DEFAULT '',
-                notes TEXT DEFAULT ''
+                notes TEXT DEFAULT '',
+                attachment BLOB DEFAULT '',
+                attachment_name TEXT DEFAULT ''
             );
         """)
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS secure_notes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT NOT NULL,
-                content TEXT DEFAULT ''
+                content TEXT DEFAULT '',
+                attachment BLOB DEFAULT '',
+                attachment_name TEXT DEFAULT ''
             );
         """)
         self.conn.execute("""
@@ -116,33 +123,45 @@ class DatabaseManager:
                 category_id INTEGER NOT NULL,
                 title TEXT NOT NULL,
                 content TEXT DEFAULT '',
+                attachment BLOB DEFAULT '',
+                attachment_name TEXT DEFAULT '',
                 FOREIGN KEY (category_id) REFERENCES custom_categories(id) ON DELETE CASCADE
             );
         """)
+        self.conn.commit()
+
+    def _ensure_attachment_columns(self):
+        tables = ["entries", "bank_accounts", "crypto_wallets", "secure_notes", "custom_entries"]
+        for table in tables:
+            try:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN attachment BLOB DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN attachment_name TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
         self.conn.commit()
 
     # ----------------------------------------------------------------------
     # Инициализация новой базы (полное шифрование)
     # ----------------------------------------------------------------------
     def initialize_master_password(self, password: str):
-        # Генерируем параметры
         salt = os.urandom(SALT_SIZE)
         master_key = os.urandom(MASTER_KEY_SIZE)
         kek = self._get_kek(password, salt)
         encrypted_master_key = self._encrypt_master_key(master_key, kek)
 
-        # Сохраняем для последующей записи в close()
         self._salt = salt
         self._encrypted_master_key = encrypted_master_key
         self._master_key = master_key
         self._kek = kek
 
-        # Создаём временный расшифрованный SQLite
         self._temp_path = self.db_path + ".tmp"
         self.conn = sqlite3.connect(self._temp_path)
         self.conn.row_factory = sqlite3.Row
         self._create_tables()
-        # База готова к работе, НЕ закрываем соединение
+        self._ensure_attachment_columns()
 
     # ----------------------------------------------------------------------
     # Проверка мастер-пароля и открытие существующей базы
@@ -155,7 +174,7 @@ class DatabaseManager:
             salt = f.read(SALT_SIZE)
             if len(salt) < SALT_SIZE:
                 return self._verify_old_format(password)
-            encrypted_master_key = f.read(MASTER_KEY_SIZE + NONCE_SIZE + 16)  # 60 байт
+            encrypted_master_key = f.read(MASTER_KEY_SIZE + NONCE_SIZE + 16)
             ciphertext = f.read()
 
         try:
@@ -178,7 +197,6 @@ class DatabaseManager:
         return True
 
     def _verify_old_format(self, password: str) -> bool:
-        """Обратная совместимость со старым форматом (шифрование полей)."""
         try:
             self.conn = sqlite3.connect(self.db_path)
             self.conn.row_factory = sqlite3.Row
@@ -209,26 +227,27 @@ class DatabaseManager:
     # Закрытие базы (сохранение в зашифрованный .pdb)
     # ----------------------------------------------------------------------
     def close(self):
+        # Сохраняем изменения во временный файл и перешифровываем в .pdb
         if self.conn and self._temp_path and self._master_key:
-            # Работаем с временным файлом: сохраняем изменения и закрываем
             self.conn.commit()
             self.conn.close()
             self.conn = None
 
-            # Читаем временный файл, шифруем и записываем в .pdb
             with open(self._temp_path, 'rb') as f:
                 plaintext = f.read()
             ciphertext = self._encrypt_blob(plaintext, self._master_key)
 
             with open(self.db_path, 'wb') as f:
-                f.write(self._salt)
-                f.write(self._encrypted_master_key)
+                if self._salt and self._encrypted_master_key:
+                    f.write(self._salt)
+                    f.write(self._encrypted_master_key)
+                else:
+                    raise RuntimeError("Нет соли или зашифрованного мастер-ключа для сохранения")
                 f.write(ciphertext)
 
             os.remove(self._temp_path)
             self._temp_path = None
         elif self.conn and not self._temp_path:
-            # Старый формат — просто закрываем
             self.conn.close()
             self.conn = None
 
@@ -238,9 +257,31 @@ class DatabaseManager:
         if self._master_key:
             _secure_erase(bytearray(self._master_key))
             self._master_key = None
+    # ----------------------------------------------------------------------
+    # Управление вложениями
+    # ----------------------------------------------------------------------
+    def set_attachment(self, table: str, item_id: int, filename: str, file_bytes: bytes):
+        self.conn.execute(
+            f"UPDATE {table} SET attachment = ?, attachment_name = ? WHERE id = ?;",
+            (file_bytes, filename, item_id)
+        )
+        self.conn.commit()
+
+    def get_attachment(self, table: str, item_id: int):
+        cursor = self.conn.execute(
+            f"SELECT attachment_name, attachment FROM {table} WHERE id = ?;", (item_id,))
+        row = cursor.fetchone()
+        if row and row["attachment"]:
+            return row["attachment_name"], row["attachment"]
+        return None, None
+
+    def remove_attachment(self, table: str, item_id: int):
+        self.conn.execute(
+            f"UPDATE {table} SET attachment = '', attachment_name = '' WHERE id = ?;", (item_id,))
+        self.conn.commit()
 
     # ----------------------------------------------------------------------
-    # CRUD-операции (поля внутри зашифрованной базы — открыты)
+    # CRUD-операции
     # ----------------------------------------------------------------------
     def add_entry(self, title, url, username, password, notes):
         self.conn.execute(
@@ -364,16 +405,34 @@ class DatabaseManager:
 
     # ---------- Резервное копирование ----------
     def create_backup(self, max_backups=5):
-        if not self.conn or not self.db_path:
+        if not self.conn:
             return
-        db_path = Path(self.db_path)
-        backup_dir = db_path.parent / "backups"
+
+        backup_dir = Path(self.db_path).parent / "backups"
         backup_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_name = f"{db_path.stem}_{timestamp}{db_path.suffix}"
-        backup_path = backup_dir / backup_name
-        shutil.copy2(self.db_path, backup_path)
-        backups = sorted(backup_dir.glob(f"{db_path.stem}_*{db_path.suffix}"))
+        base_name = Path(self.db_path).stem
+        backup_path = backup_dir / f"{base_name}_{timestamp}{Path(self.db_path).suffix}"
+
+        if self._temp_path and self._master_key:
+            self.conn.commit()
+            with open(self._temp_path, 'rb') as f:
+                plaintext = f.read()
+            ciphertext = self._encrypt_blob(plaintext, self._master_key)
+            with open(backup_path, 'wb') as f:
+                if self._salt and self._encrypted_master_key:
+                    f.write(self._salt)
+                    f.write(self._encrypted_master_key)
+                else:
+                    raise RuntimeError("Нет соли или зашифрованного мастер-ключа для сохранения")
+                f.write(ciphertext)
+        else:
+            if os.path.exists(self.db_path):
+                shutil.copy2(self.db_path, backup_path)
+            else:
+                return
+
+        backups = sorted(backup_dir.glob(f"{base_name}_*{Path(self.db_path).suffix}"))
         if len(backups) > max_backups:
             for old_backup in backups[:-max_backups]:
                 old_backup.unlink()

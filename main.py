@@ -17,9 +17,7 @@ from ui.bank_dialog import BankDialog
 from ui.crypto_dialog import CryptoDialog
 from ui.note_dialog import NoteDialog
 from ui.custom_dialog import CustomEntryDialog
-from utils import resource_path
-from ui.crypto_worker import CryptoWorker
-from utils import secure_erase_string
+from utils import resource_path, secure_erase_string
 
 CATEGORY_NAMES = ["Пароли", "Банковские счета", "Криптокошельки", "Защищённые заметки"]
 CATEGORY_TABLES = ["entries", "bank_accounts", "crypto_wallets", "secure_notes"]
@@ -32,7 +30,7 @@ class MainWindow(QMainWindow):
         self.db_manager = None
         self.current_db_path = None
         self.current_category_index = 0
-        self._user_category_id = None   # для пользовательских категорий
+        self._user_category_id = None
 
         self._apply_builtin_style()
         self.status_bar = self.statusBar()
@@ -126,14 +124,12 @@ class MainWindow(QMainWindow):
         self.category_list.addItems(CATEGORY_NAMES)
         self.category_list.setCurrentRow(0)
         self.category_list.currentRowChanged.connect(self._on_category_changed)
-        # Подключаем контекстное меню (правая кнопка мыши)
         self.category_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.category_list.customContextMenuRequested.connect(self._on_category_context_menu)
         left_layout.addWidget(self.category_list)
 
-        self.add_category_btn = QPushButton("＋ Добавить категорию")
-        self.add_category_btn.setMaximumWidth(180)
-        self.add_category_btn.clicked.connect(self._on_add_custom_category)
+        self.add_category_btn = QPushButton("+")
+        self.add_category_btn.setMaximumWidth(30)
         self.add_category_btn.clicked.connect(self._on_add_custom_category)
         left_layout.addWidget(self.add_category_btn)
 
@@ -144,7 +140,6 @@ class MainWindow(QMainWindow):
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
 
-        # Поиск
         search_layout = QHBoxLayout()
         search_layout.addWidget(QLabel("Поиск:"))
         self.search_edit = QLineEdit()
@@ -153,14 +148,12 @@ class MainWindow(QMainWindow):
         search_layout.addWidget(self.search_edit)
         right_layout.addLayout(search_layout)
 
-        # Таблица записей
         self.table = QTableWidget()
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.itemSelectionChanged.connect(self._on_table_selection_changed)
         right_layout.addWidget(self.table)
 
-        # Кнопки действий
         btn_layout = QHBoxLayout()
         self.add_btn = QPushButton("Добавить")
         self.add_btn.clicked.connect(self._on_add_entry)
@@ -174,7 +167,7 @@ class MainWindow(QMainWindow):
         btn_layout.addStretch()
         right_layout.addLayout(btn_layout)
 
-        # Информационная панель
+        # Инфопанель
         self.info_layout = QHBoxLayout()
         self.info_label = QLabel("Выберите запись")
         self.info_layout.addWidget(self.info_label)
@@ -194,7 +187,6 @@ class MainWindow(QMainWindow):
         self.show_sensitive_btn.toggled.connect(self._on_toggle_show_sensitive)
         self.info_layout.addWidget(self.show_sensitive_btn)
 
-        # Кнопки для файлов
         self.attach_file_btn = QPushButton("📎 Прикрепить файл")
         self.attach_file_btn.clicked.connect(self._on_attach_file)
         self.info_layout.addWidget(self.attach_file_btn)
@@ -206,12 +198,10 @@ class MainWindow(QMainWindow):
         self.info_layout.addWidget(self.attachment_name_label)
 
         right_layout.addLayout(self.info_layout)
-
         splitter.addWidget(right_widget)
         splitter.setStretchFactor(1, 4)
         self.setCentralWidget(splitter)
 
-        # Изначально кнопки инфопанели неактивны
         self._set_info_controls_enabled(False)
 
     def _set_controls_enabled(self, enabled: bool):
@@ -233,7 +223,6 @@ class MainWindow(QMainWindow):
             self.current_category_index = index
             self._user_category_id = None
         else:
-            # Пользовательская категория
             self.current_category_index = -1
             cat_name = self.category_list.item(index).text()
             cats = self.db_manager.get_all_custom_categories()
@@ -559,38 +548,18 @@ class MainWindow(QMainWindow):
         filepath, _ = QFileDialog.getOpenFileName(self, "Выберите файл")
         if not filepath:
             return
-
-        # Читаем файл и шифруем в фоновом потоке
-        self.attach_file_btn.setEnabled(False)
-        self.status_bar.showMessage("Шифрование файла...")
-
         try:
             with open(filepath, "rb") as f:
                 file_bytes = f.read()
         except Exception as e:
             QMessageBox.warning(self, "Ошибка", f"Не удалось прочитать файл: {e}")
-            self.attach_file_btn.setEnabled(True)
             return
-
         entry = self._get_current_data()[self.table.currentRow()]
         table_name = self._current_table_name()
         filename = Path(filepath).name
-
-        self.crypto_worker = CryptoWorker(
-            self.db_manager.set_attachment,
-            table_name, entry['id'], filename, file_bytes
-        )
-        self.crypto_worker.finished.connect(self._on_attachment_encrypted)
-        self.crypto_worker.error.connect(self._on_attachment_error)
-        self.crypto_worker.start()
-    def _on_attachment_encrypted(self, result):
-        self.attach_file_btn.setEnabled(True)
-        self.status_bar.showMessage("Файл зашифрован и сохранён")
+        self.db_manager.set_attachment(table_name, entry['id'], filename, file_bytes)
         self._update_attachment_info()
-
-    def _on_attachment_error(self, error_msg):
-        self.attach_file_btn.setEnabled(True)
-        QMessageBox.critical(self, "Ошибка шифрования", error_msg)
+        QMessageBox.information(self, "Готово", "Файл зашифрован и сохранён.")
 
     def _on_download_file(self):
         if not self.db_manager or self.table.currentRow() < 0:
@@ -617,7 +586,6 @@ class MainWindow(QMainWindow):
             return
         name, ok = QInputDialog.getText(self, "Новая категория", "Название категории:")
         if ok and name.strip():
-            # Проверка уникальности
             for i in range(self.category_list.count()):
                 if self.category_list.item(i).text() == name.strip():
                     QMessageBox.warning(self, "Ошибка", "Такая категория уже существует.")
@@ -628,7 +596,6 @@ class MainWindow(QMainWindow):
     def _load_custom_categories(self):
         if not self.db_manager:
             return
-        # Удаляем старые пользовательские элементы (все, что после встроенных)
         while self.category_list.count() > len(CATEGORY_NAMES):
             self.category_list.takeItem(self.category_list.count() - 1)
         cats = self.db_manager.get_all_custom_categories()
@@ -642,19 +609,18 @@ class MainWindow(QMainWindow):
         if filepath:
             if not filepath.endswith(".pdb"):
                 filepath += ".pdb"
-            # Удаляем существующий файл, чтобы начать чистую базу
             if Path(filepath).exists():
                 Path(filepath).unlink()
             self._open_database(filepath, new=True)
 
     def _on_open_database(self):
-        filepath, _ = QFileDialog.getOpenFileName(self, "Открыть базу данных",
-                                                  str(Path.home()), "Password DB (*.pdb)")
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "Открыть базу данных", str(Path.home()), "Password DB (*.pdb)"
+        )
         if filepath:
             self._open_database(filepath, new=False)
 
     def _open_database(self, db_path: str, new: bool = False):
-        # Закрываем предыдущую базу, если открыта
         if self.db_manager:
             self.db_manager.close()
             self.db_manager = None
@@ -662,10 +628,8 @@ class MainWindow(QMainWindow):
 
         db = DatabaseManager(db_path)
 
-        # Запрашиваем мастер-пароль
         password, ok = QInputDialog.getText(
-            self,
-            "Мастер-пароль",
+            self, "Мастер-пароль",
             "Придумайте мастер-пароль:" if new else "Введите мастер-пароль:",
             echo=QLineEdit.Password
         )
@@ -674,12 +638,10 @@ class MainWindow(QMainWindow):
             db.close()
             return
 
-        # При создании новой базы предупреждаем о слабом пароле
         if new:
             if len(password) < 8 or password.isdigit():
                 reply = QMessageBox.question(
-                    self,
-                    "Слабый мастер-пароль",
+                    self, "Слабый мастер-пароль",
                     "Пароль слишком короткий или состоит только из цифр.\n"
                     "Это делает вашу базу уязвимой для перебора.\n\n"
                     "Продолжить с этим паролем?",
@@ -688,7 +650,6 @@ class MainWindow(QMainWindow):
                 if reply == QMessageBox.No:
                     db.close()
                     return
-
             db.initialize_master_password(password)
         else:
             if not db.verify_master_password(password):
@@ -696,7 +657,6 @@ class MainWindow(QMainWindow):
                 db.close()
                 return
 
-        # Безопасно стираем мастер-пароль из памяти
         secure_erase_string(password)
 
         self.db_manager = db
@@ -708,16 +668,84 @@ class MainWindow(QMainWindow):
         self._update_table_headers()
         self._refresh_table()
         self._set_controls_enabled(True)
+
+        # Сразу создаём резервную копию (сохраняем .pdb на диск)
+        if new:
+            self.db_manager.create_backup()
+
+    def _on_backup_database(self):
+        if not self.db_manager or not self.current_db_path:
+            QMessageBox.warning(self, "Ошибка", "Нет открытой базы данных.")
+            return
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, "Куда сохранить резервную копию?",
+            str(Path.home()), "Password DB backup (*.pdb)"
+        )
+        if filepath:
+            if not filepath.endswith(".pdb"):
+                filepath += ".pdb"
+            try:
+                shutil.copy2(self.current_db_path, filepath)
+                QMessageBox.information(self, "Готово", f"Резервная копия сохранена:\n{filepath}")
+            except Exception as e:
+                QMessageBox.critical(self, "Ошибка", f"Не удалось создать копию:\n{e}")
+
+    def _on_emergency_kit(self):
+        import shutil as sh
+        folder = QFileDialog.getExistingDirectory(
+            self, "Выберите папку для аварийного комплекта", str(Path.home())
+        )
+        if not folder:
+            return
+        try:
+            if self.db_manager and self.current_db_path:
+                db_path = Path(self.current_db_path)
+                backup_name = f"{db_path.stem}_emergency_backup{db_path.suffix}"
+                backup_dest = Path(folder) / backup_name
+                sh.copy2(self.current_db_path, backup_dest)
+            else:
+                backup_dest = None
+
+            instruction_path = Path(folder) / "PasswordVault_Emergency_Kit.txt"
+            with open(instruction_path, "w", encoding="utf-8") as f:
+                f.write("=== АВАРИЙНЫЙ КОМПЛЕКТ PasswordVault ===\n\n")
+                f.write("Этот комплект поможет вам восстановить доступ к паролям,\n")
+                f.write("если вы потеряли основной файл базы данных.\n\n")
+                f.write("1. Ваш мастер-пароль:\n")
+                f.write("   [ ЗАПИШИТЕ ЕГО ЗДЕСЬ И ХРАНИТЕ ОТДЕЛЬНО ]\n\n")
+                f.write("2. Резервная копия базы данных:\n")
+                if backup_dest:
+                    f.write(f"   Файл: {backup_dest.name}\n")
+                    f.write("   Этот файл ЗАШИФРОВАН. Для его открытия нужен мастер-пароль.\n\n")
+                else:
+                    f.write("   Не удалось создать резервную копию.\n\n")
+                f.write("3. Как восстановить доступ:\n")
+                f.write("   - Установите PasswordVault на компьютер.\n")
+                f.write("   - Откройте файл .pdb через «Открыть базу данных».\n")
+                f.write("   - Введите ваш мастер-пароль.\n\n")
+                f.write("4. Если мастер-пароль утерян:\n")
+                f.write("   Восстановить данные НЕВОЗМОЖНО.\n")
+                f.write("   Храните мастер-пароль в надёжном месте!\n\n")
+                f.write("5. Контакты:\n")
+                f.write("   Разработчик: Алексей Ещенко\n")
+                f.write("   Дипломный проект БФУ им. Канта, 2026\n")
+
+            QMessageBox.information(self, "Аварийный комплект создан",
+                f"Комплект сохранён в папку:\n{folder}\n\n"
+                f"Что внутри:\n"
+                f"- Инструкция: {instruction_path.name}\n"
+                f"{'- Резервная копия: ' + backup_dest.name if backup_dest else '- Резервная копия не создана'}\n\n"
+                "Храните эту папку на отдельном носителе (флешке, облаке, распечатанном виде).")
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось создать аварийный комплект:\n{e}")
+
     def _on_category_context_menu(self, pos):
-        """Показывает контекстное меню для пользовательской категории."""
         item = self.category_list.itemAt(pos)
         if item is None:
             return
         row = self.category_list.row(item)
         if row < len(CATEGORY_NAMES):
-            # Встроенная категория — не даём удалять или переименовывать
             return
-        # Это пользовательская категория
         menu = QMenu(self)
         rename_action = menu.addAction("Переименовать")
         delete_action = menu.addAction("Удалить")
@@ -726,23 +754,20 @@ class MainWindow(QMainWindow):
             self._on_rename_category(row, item.text())
         elif action == delete_action:
             self._on_delete_category(row, item.text())
+
     def _on_rename_category(self, row, old_name):
         new_name, ok = QInputDialog.getText(self, "Переименовать категорию",
                                             "Новое название:", text=old_name)
         if ok and new_name.strip():
-            # Проверка на дубликат
             for i in range(self.category_list.count()):
                 if i != row and self.category_list.item(i).text() == new_name.strip():
                     QMessageBox.warning(self, "Ошибка", "Категория с таким именем уже существует.")
                     return
-            # Обновление в БД
-            cat_name = old_name
             cats = self.db_manager.get_all_custom_categories()
             for cat in cats:
-                if cat["name"] == cat_name:
+                if cat["name"] == old_name:
                     self.db_manager.rename_custom_category(cat["id"], new_name.strip())
                     break
-            # Обновление в интерфейсе
             self.category_list.item(row).setText(new_name.strip())
 
     def _on_delete_category(self, row, name):
@@ -758,105 +783,22 @@ class MainWindow(QMainWindow):
                     break
             if cat_id is not None:
                 self.db_manager.delete_custom_category(cat_id)
-            # Удаляем элемент из списка
             self.category_list.takeItem(row)
-    def _on_backup_database(self):
-        if not self.db_manager or not self.current_db_path:
-            QMessageBox.warning(self, "Ошибка", "Нет открытой базы данных.")
-            return
-        filepath, _ = QFileDialog.getSaveFileName(self, "Куда сохранить резервную копию?",
-                                                  str(Path.home()), "Password DB backup (*.pdb)")
-        if filepath:
-            if not filepath.endswith(".pdb"):
-                filepath += ".pdb"
-            try:
-                shutil.copy2(self.current_db_path, filepath)
-                QMessageBox.information(self, "Готово", f"Резервная копия сохранена:\n{filepath}")
-            except Exception as e:
-                QMessageBox.critical(self, "Ошибка", f"Не удалось создать копию:\n{e}")
 
-    def _on_emergency_kit(self):
-        import shutil
-        from pathlib import Path
-
-        folder = QFileDialog.getExistingDirectory(
-            self, "Выберите папку для аварийного комплекта", str(Path.home())
-        )
-        if not folder:
-            return
-
-        try:
-            # 1. Копируем зашифрованную базу
-            if self.db_manager and self.current_db_path:
-                db_path = Path(self.current_db_path)
-                backup_name = f"{db_path.stem}_emergency_backup{db_path.suffix}"
-                backup_dest = Path(folder) / backup_name
-                shutil.copy2(self.current_db_path, backup_dest)
-            else:
-                backup_dest = None
-
-            # 2. Создаём инструкцию с местом для ручной записи пароля
-            instruction_path = Path(folder) / "PasswordVault_Emergency_Kit.txt"
-            with open(instruction_path, "w", encoding="utf-8") as f:
-                f.write("=== АВАРИЙНЫЙ КОМПЛЕКТ PasswordVault ===\n\n")
-                f.write("Этот комплект предназначен для экстренного восстановления доступа\n")
-                f.write("ко всем вашим паролям в случае потери основного файла базы данных.\n\n")
-                
-                f.write("1. МАСТЕР-ПАРОЛЬ (впишите от руки!):\n")
-                f.write("   [ _____________________________________________ ]\n\n")
-                f.write("   ВНИМАНИЕ! Пароль не хранится в программе, его знаете только вы.\n")
-                f.write("   Если забудете пароль и не заполните эту строку — данные пропадут навсегда.\n\n")
-                
-                f.write("2. РЕЗЕРВНАЯ КОПИЯ БАЗЫ ДАННЫХ:\n")
-                if backup_dest:
-                    f.write(f"   Файл: {backup_dest.name}\n")
-                    f.write("   Это зашифрованная копия вашей базы. Для её открытия нужен\n")
-                    f.write("   мастер-пароль из пункта 1.\n\n")
-                else:
-                    f.write("   Не удалось создать копию (нет открытой базы).\n\n")
-                
-                f.write("3. КАК ВОССТАНОВИТЬ ДОСТУП:\n")
-                f.write("   - Установите PasswordVault на компьютер.\n")
-                f.write("   - Откройте файл .pdb через меню «Открыть базу данных».\n")
-                f.write("   - Введите мастер-пароль из этого комплекта.\n")
-                f.write("   - Все ваши пароли, счета, заметки и вложения будут восстановлены.\n\n")
-                
-                f.write("4. ХРАНЕНИЕ КОМПЛЕКТА:\n")
-                f.write("   Рекомендуется распечатать эту инструкцию и хранить вместе с копией\n")
-                f.write("   базы данных в защищённом месте (сейф, конверт, отдельный носитель).\n")
-                f.write("   Никому не сообщайте мастер-пароль.\n\n")
-                
-                f.write("5. КОНТАКТЫ:\n")
-                f.write("   Разработчик: Алексей Ещенко\n")
-                f.write("   Дипломный проект БФУ им. Канта, 2026\n")
-
-            QMessageBox.information(
-                self, "Аварийный комплект создан",
-                f"Комплект сохранён в папку:\n{folder}\n\n"
-                "Что внутри:\n"
-                f"- Инструкция (с местом для пароля): {instruction_path.name}\n"
-                f"{'- Резервная копия базы: ' + backup_dest.name if backup_dest else '- Резервная копия не создана'}\n\n"
-                "Заполните мастер-пароль от руки в инструкции и храните комплект в надёжном месте."
-            )
-
-        except Exception as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось создать аварийный комплект:\n{e}")
     def _on_about(self):
-        QMessageBox.about(
-            self,
-            "О программе",
-            "PasswordVault\n"
-            "Локальный менеджер паролей\n"
-            "Версия: 1.0\n\n"
-            "Разработчик: Алексей Ещенко\n"
-            "Дипломный проект БФУ им. Канта, 2026\n\n"
-            "Безопасное хранение и управление конфиденциальными данными."
-        )
+        QMessageBox.about(self, "О программе",
+                          "PasswordVault\n"
+                          "Локальный менеджер паролей\n"
+                          "Версия: 1.0\n\n"
+                          "Разработчик: Алексей Ещенко\n"
+                          "Дипломный проект БФУ им. Канта, 2026\n\n"
+                          "Безопасное хранение и управление конфиденциальными данными.")
 
     def closeEvent(self, event):
         if self.db_manager:
             self.db_manager.close()
         event.accept()
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
